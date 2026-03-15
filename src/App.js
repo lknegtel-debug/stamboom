@@ -208,12 +208,42 @@ function SetupScreen({ onComplete }) {
 // ============================================================
 // OVERVIEW SCREEN
 // ============================================================
-function OverviewScreen({ treeData, onOpenBranch }) {
+function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
   if (!treeData) return null;
   const branches = Object.values(treeData.branches || {});
   const people = treeData.people || {};
   const total = Object.keys(people).length;
   const [exporting, setExporting] = useState(false);
+  const [addModal, setAddModal] = useState(null); // null or { familySide: 1|2 }
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [pFirstName, setPFirstName] = useState("");
+  const [pLastName, setPLastName] = useState("");
+
+  const openAddStamouder = (side) => { setAddModal({ familySide: side }); setFirstName(""); setLastName(""); setPFirstName(""); setPLastName(""); };
+  const closeAddModal = () => { setAddModal(null); setFirstName(""); setLastName(""); setPFirstName(""); setPLastName(""); };
+
+  const handleAddStamouder = () => {
+    if (!firstName.trim()) return;
+    const bId = uid(), sId = uid();
+    const newPeople = { ...treeData.people };
+    newPeople[sId] = { id: sId, firstName: firstName.trim(), lastName: lastName.trim(), branchId: bId, familySide: addModal.familySide, partnerId: null, parentId: null, depth: 0 };
+    let pId = null;
+    if (pFirstName.trim()) {
+      pId = uid();
+      newPeople[pId] = { id: pId, firstName: pFirstName.trim(), lastName: pLastName.trim(), branchId: bId, familySide: addModal.familySide, partnerId: sId, parentId: null, depth: 0, isPartnerOf: sId };
+      newPeople[sId].partnerId = pId;
+    }
+    const newBranches = { ...treeData.branches, [bId]: { id: bId, stamouderId: sId, partnerId: pId, familySide: addModal.familySide } };
+    const updated = { ...treeData, people: newPeople, branches: newBranches };
+    onUpdateTree(updated);
+    if (useFirebase) {
+      firebaseDb.ref(`trees/${treeId}/people/${sId}`).set(newPeople[sId]);
+      if (pId) firebaseDb.ref(`trees/${treeId}/people/${pId}`).set(newPeople[pId]);
+      firebaseDb.ref(`trees/${treeId}/branches/${bId}`).set(newBranches[bId]);
+    }
+    closeAddModal();
+  };
 
   const dirKids = (bId, sId) => Object.values(people).filter((p) => p.branchId === bId && p.parentId === sId && !p.isPartnerOf);
   const descCount = (bId) => Object.values(people).filter((p) => p.branchId === bId && p.depth > 0 && !p.isPartnerOf).length;
@@ -309,7 +339,7 @@ function OverviewScreen({ treeData, onOpenBranch }) {
     );
   };
 
-  const Side = ({ list, name, accent, bg, bgH }) => (
+  const Side = ({ list, name, accent, bg, bgH, familySide }) => (
     <div style={{ marginBottom: 40 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
         <div style={{ width: 4, height: 32, background: accent, borderRadius: 2 }} />
@@ -317,6 +347,13 @@ function OverviewScreen({ treeData, onOpenBranch }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
         {list.map((b) => (<Card key={b.id} branch={b} accent={accent} bg={bg} bgH={bgH} />))}
+        <div onClick={() => openAddStamouder(familySide)} style={{
+          borderRadius: 14, padding: "18px 20px", cursor: "pointer", transition: "all 0.15s",
+          border: `2px dashed ${accent}`, display: "flex", alignItems: "center", justifyContent: "center",
+          minHeight: 100, background: "transparent"
+        }}>
+          <span style={{ fontSize: 16, fontWeight: 500, color: accent }}>+ Stamouder toevoegen</span>
+        </div>
       </div>
     </div>
   );
@@ -339,9 +376,30 @@ function OverviewScreen({ treeData, onOpenBranch }) {
             {exporting ? "Bezig met exporteren..." : "📄 Exporteer als PDF"}
           </button>
         </div>
-        <Side list={branches.filter((b) => b.familySide === 1)} name={treeData.familyName1} accent={C.a1} bg={C.c1} bgH={C.c1h} />
-        <Side list={branches.filter((b) => b.familySide === 2)} name={treeData.familyName2} accent={C.a2} bg={C.c2} bgH={C.c2h} />
+        <Side list={branches.filter((b) => b.familySide === 1)} name={treeData.familyName1} accent={C.a1} bg={C.c1} bgH={C.c1h} familySide={1} />
+        <Side list={branches.filter((b) => b.familySide === 2)} name={treeData.familyName2} accent={C.a2} bg={C.c2} bgH={C.c2h} familySide={2} />
       </div>
+
+      {/* Add Stamouder Modal */}
+      <Modal open={!!addModal} onClose={closeAddModal} title="Stamouder toevoegen">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.txM, textTransform: "uppercase", letterSpacing: 1 }}>Stamouder</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <Input value={firstName} onChange={setFirstName} placeholder="Voornaam" autoFocus />
+            <Input value={lastName} onChange={setLastName} placeholder="Achternaam" />
+          </div>
+          <div style={{ fontSize: 13, color: C.txM, marginTop: 4 }}>Partner (optioneel)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <Input value={pFirstName} onChange={setPFirstName} placeholder="Voornaam" />
+            <Input value={pLastName} onChange={setPLastName} placeholder="Achternaam" />
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Btn onClick={handleAddStamouder} disabled={!firstName.trim()} style={{ flex: 1 }}>Toevoegen</Btn>
+            <Btn variant="secondary" onClick={closeAddModal}>Annuleren</Btn>
+          </div>
+        </div>
+      </Modal>
+
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap');`}</style>
     </div>
   );
@@ -535,6 +593,6 @@ export default function App() {
   }
 
   return (
-    <OverviewScreen treeData={treeData} onOpenBranch={(id) => { setBr(id); setSc("branch"); }} />
+    <OverviewScreen treeData={treeData} onOpenBranch={(id) => { setBr(id); setSc("branch"); }} onUpdateTree={setTD} treeId={treeId} />
   );
 }
