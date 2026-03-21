@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { jsPDF } from "jspdf";
 
 // ============================================================
@@ -14,7 +14,7 @@ const FIREBASE_CONFIG = {
   appId: "1:383682219255:web:09614715b63b807367d7f2"
 };
 
-let firebaseDb = null, useFirebase = false;
+let firebaseDb = null, firebaseStorage = null, useFirebase = false;
 
 const initFirebase = () => new Promise((resolve) => {
   const s1 = document.createElement("script");
@@ -23,20 +23,59 @@ const initFirebase = () => new Promise((resolve) => {
     const s2 = document.createElement("script");
     s2.src = "https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js";
     s2.onload = () => {
-      try {
-        window.firebase.initializeApp(FIREBASE_CONFIG);
-        firebaseDb = window.firebase.database();
-        useFirebase = true;
-        resolve(true);
-      } catch (e) { resolve(false); }
+      const s3 = document.createElement("script");
+      s3.src = "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js";
+      s3.onload = () => {
+        try {
+          window.firebase.initializeApp(FIREBASE_CONFIG);
+          firebaseDb = window.firebase.database();
+          firebaseStorage = window.firebase.storage();
+          useFirebase = true;
+          resolve(true);
+        } catch (e) { resolve(false); }
+      };
+      s3.onerror = () => resolve(false);
+      document.head.appendChild(s3);
     };
     s2.onerror = () => resolve(false);
     document.head.appendChild(s2);
   };
   s1.onerror = () => resolve(false);
   document.head.appendChild(s1);
-  setTimeout(() => resolve(false), 5000);
+  setTimeout(() => resolve(false), 6000);
 });
+
+// ============================================================
+// Image compression helper
+// ============================================================
+const compressImage = (file, maxWidth = 200) => new Promise((resolve) => {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const ratio = Math.min(maxWidth / img.width, maxWidth / img.height);
+      canvas.width = img.width * ratio;
+      canvas.height = img.height * ratio;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", 0.7));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+const uploadPhoto = async (personId, file) => {
+  if (!firebaseStorage || !file) return null;
+  const compressed = await compressImage(file);
+  // Convert base64 to blob
+  const res = await fetch(compressed);
+  const blob = await res.blob();
+  const ref = firebaseStorage.ref(`photos/${personId}.jpg`);
+  await ref.put(blob);
+  return await ref.getDownloadURL();
+};
 
 // ============================================================
 // Helpers
@@ -63,13 +102,13 @@ const genColor = (d) => gC[Math.min(d, gC.length - 1)];
 const genLabel = (d) => ["stamouder", "kind", "kleinkind", "achterkleinkind"][d] || `generatie ${d + 1}`;
 
 // ============================================================
-// Shared UI Components
+// Shared UI
 // ============================================================
 function Modal({ open, onClose, title, children }) {
   if (!open) return null;
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(58,46,34,0.45)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.wh, borderRadius: 16, padding: "28px 24px", maxWidth: 400, width: "100%", boxShadow: "0 20px 60px rgba(58,46,34,0.18)" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.wh, borderRadius: 16, padding: "28px 24px", maxWidth: 420, width: "100%", boxShadow: "0 20px 60px rgba(58,46,34,0.18)", maxHeight: "90vh", overflowY: "auto" }}>
         <h3 style={{ fontFamily: fh, fontSize: 22, color: C.tx, margin: "0 0 20px", fontWeight: 600 }}>{title}</h3>
         {children}
       </div>
@@ -86,13 +125,21 @@ function Btn({ children, onClick, variant = "primary", small, style = {}, disabl
   );
 }
 
-function Input({ value, onChange, placeholder, autoFocus }) {
+function Input({ value, onChange, placeholder, autoFocus, type = "text", style = {} }) {
   return (
-    <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus}
-      style={{ width: "100%", padding: "12px 16px", fontSize: 16, border: `2px solid ${C.bd}`, borderRadius: 10, fontFamily: ff, color: C.tx, background: C.bg, outline: "none", boxSizing: "border-box" }}
+    <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} type={type}
+      style={{ width: "100%", padding: "12px 16px", fontSize: 16, border: `2px solid ${C.bd}`, borderRadius: 10, fontFamily: ff, color: C.tx, background: C.bg, outline: "none", boxSizing: "border-box", ...style }}
       onFocus={(e) => (e.target.style.borderColor = C.a1)}
       onBlur={(e) => (e.target.style.borderColor = C.bd)}
     />
+  );
+}
+
+// Small photo thumbnail component
+function PhotoThumb({ src, size = 60 }) {
+  if (!src) return null;
+  return (
+    <img src={src} alt="" style={{ width: size, height: size, borderRadius: 8, objectFit: "cover", border: `1px solid ${C.bd}` }} />
   );
 }
 
@@ -118,11 +165,11 @@ function SetupScreen({ onComplete }) {
     const addB = (s, side) => {
       if (!s.first.trim()) return;
       const bId = uid(), sId = uid();
-      data.people[sId] = { id: sId, firstName: s.first.trim(), lastName: s.last.trim(), branchId: bId, familySide: side, partnerId: null, parentId: null, depth: 0 };
+      data.people[sId] = { id: sId, firstName: s.first.trim(), lastName: s.last.trim(), branchId: bId, familySide: side, partnerId: null, parentId: null, depth: 0, birthYear: "", photoURL: "" };
       let pId = null;
       if (s.pF.trim()) {
         pId = uid();
-        data.people[pId] = { id: pId, firstName: s.pF.trim(), lastName: s.pL.trim(), branchId: bId, familySide: side, partnerId: sId, parentId: null, depth: 0, isPartnerOf: sId };
+        data.people[pId] = { id: pId, firstName: s.pF.trim(), lastName: s.pL.trim(), branchId: bId, familySide: side, partnerId: sId, parentId: null, depth: 0, isPartnerOf: sId, birthYear: "", photoURL: "" };
         data.people[sId].partnerId = pId;
       }
       data.branches[bId] = { id: bId, stamouderId: sId, partnerId: pId, familySide: side };
@@ -214,24 +261,24 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
   const people = treeData.people || {};
   const total = Object.keys(people).length;
   const [exporting, setExporting] = useState(false);
-  const [addModal, setAddModal] = useState(null); // null or { familySide: 1|2 }
+  const [addModal, setAddModal] = useState(null);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [pFirstName, setPFirstName] = useState("");
   const [pLastName, setPLastName] = useState("");
 
   const openAddStamouder = (side) => { setAddModal({ familySide: side }); setFirstName(""); setLastName(""); setPFirstName(""); setPLastName(""); };
-  const closeAddModal = () => { setAddModal(null); setFirstName(""); setLastName(""); setPFirstName(""); setPLastName(""); };
+  const closeAddModal = () => { setAddModal(null); };
 
   const handleAddStamouder = () => {
     if (!firstName.trim()) return;
     const bId = uid(), sId = uid();
     const newPeople = { ...treeData.people };
-    newPeople[sId] = { id: sId, firstName: firstName.trim(), lastName: lastName.trim(), branchId: bId, familySide: addModal.familySide, partnerId: null, parentId: null, depth: 0 };
+    newPeople[sId] = { id: sId, firstName: firstName.trim(), lastName: lastName.trim(), branchId: bId, familySide: addModal.familySide, partnerId: null, parentId: null, depth: 0, birthYear: "", photoURL: "" };
     let pId = null;
     if (pFirstName.trim()) {
       pId = uid();
-      newPeople[pId] = { id: pId, firstName: pFirstName.trim(), lastName: pLastName.trim(), branchId: bId, familySide: addModal.familySide, partnerId: sId, parentId: null, depth: 0, isPartnerOf: sId };
+      newPeople[pId] = { id: pId, firstName: pFirstName.trim(), lastName: pLastName.trim(), branchId: bId, familySide: addModal.familySide, partnerId: sId, parentId: null, depth: 0, isPartnerOf: sId, birthYear: "", photoURL: "" };
       newPeople[sId].partnerId = pId;
     }
     const newBranches = { ...treeData.branches, [bId]: { id: bId, stamouderId: sId, partnerId: pId, familySide: addModal.familySide } };
@@ -250,13 +297,18 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
   const partnerOf = (pid) => { const p = people[pid]; return p?.partnerId ? people[p.partnerId] || null : null; };
   const kidsOf = (pid, bId) => Object.values(people).filter((p) => p.branchId === bId && p.parentId === pid && !p.isPartnerOf);
 
-  // ---- PDF EXPORT with jsPDF ----
+  // PDF Export
   const buildLines = (pid, bId, d = 0) => {
     const p = people[pid]; if (!p) return [];
     const partner = partnerOf(pid);
     const labels = ["Stamouder", "Kind", "Kleinkind", "Achterkleinkind"];
     let name = `${p.firstName} ${p.lastName}`.trim();
-    if (partner) name += `  &  ${partner.firstName} ${partner.lastName}`.trim();
+    if (p.birthYear) name += ` (${p.birthYear})`;
+    if (partner) {
+      let pName = `${partner.firstName} ${partner.lastName}`.trim();
+      if (partner.birthYear) pName += ` (${partner.birthYear})`;
+      name += `  &  ${pName}`;
+    }
     const lines = [{ name, depth: d, label: labels[d] || `Gen. ${d + 1}` }];
     for (const k of kidsOf(pid, bId)) lines.push(...buildLines(k.id, bId, d + 1));
     return lines;
@@ -305,7 +357,6 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
       doc.setDrawColor(230, 230, 230); doc.setLineWidth(0.3); doc.line(m, y, pw - m, y); y += 6;
       doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(168, 158, 148);
       doc.text(`Geexporteerd op ${new Date().toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric" })}`, m, y);
-
       doc.save(`stamboom-${treeData.familyName1}-${treeData.familyName2}.pdf`);
     } catch (e) {
       console.error("PDF export error:", e);
@@ -314,7 +365,7 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
     setExporting(false);
   };
 
-  // ---- UI ----
+  // Card
   const Card = ({ branch, accent, bg, bgH }) => {
     const st = people[branch.stamouderId], pt = branch.partnerId ? people[branch.partnerId] : null;
     const kids = dirKids(branch.id, branch.stamouderId), cnt = descCount(branch.id);
@@ -322,10 +373,15 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
     return (
       <div onClick={() => onOpenBranch(branch.id)} onMouseEnter={() => sH(true)} onMouseLeave={() => sH(false)}
         style={{ background: h ? bgH : bg, borderRadius: 14, padding: "18px 20px", cursor: "pointer", transition: "all 0.15s", border: `1px solid ${C.bd}`, boxShadow: `0 2px 8px ${C.sh}` }}>
-        <div style={{ fontFamily: fh, fontSize: 18, fontWeight: 600, color: C.tx, marginBottom: 2 }}>{st ? `${st.firstName} ${st.lastName}`.trim() : "?"}</div>
-        <div style={{ fontSize: 15, color: C.txL, marginBottom: 10 }}>& {pt ? `${pt.firstName} ${pt.lastName}`.trim() : "partner onbekend"}</div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: fh, fontSize: 18, fontWeight: 600, color: C.tx, marginBottom: 2 }}>{st ? `${st.firstName} ${st.lastName}`.trim() : "?"}</div>
+            <div style={{ fontSize: 15, color: C.txL, marginBottom: 6 }}>& {pt ? `${pt.firstName} ${pt.lastName}`.trim() : "partner onbekend"}</div>
+          </div>
+          {st?.photoURL && <PhotoThumb src={st.photoURL} size={50} />}
+        </div>
         {kids.length > 0 && (
-          <div style={{ marginBottom: 10 }}>
+          <div style={{ marginTop: 8, marginBottom: 8 }}>
             <div style={{ fontSize: 11, color: C.txM, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Kinderen</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
               {kids.map((k) => (<span key={k.id} style={{ background: C.wh, borderRadius: 6, padding: "2px 8px", fontSize: 13, color: C.tx, border: `1px solid ${C.bd}` }}>{k.firstName}</span>))}
@@ -349,8 +405,7 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
         {list.map((b) => (<Card key={b.id} branch={b} accent={accent} bg={bg} bgH={bgH} />))}
         <div onClick={() => openAddStamouder(familySide)} style={{
           borderRadius: 14, padding: "18px 20px", cursor: "pointer", transition: "all 0.15s",
-          border: `2px dashed ${accent}`, display: "flex", alignItems: "center", justifyContent: "center",
-          minHeight: 100, background: "transparent"
+          border: `2px dashed ${accent}`, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 100
         }}>
           <span style={{ fontSize: 16, fontWeight: 500, color: accent }}>+ Stamouder toevoegen</span>
         </div>
@@ -380,7 +435,6 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
         <Side list={branches.filter((b) => b.familySide === 2)} name={treeData.familyName2} accent={C.a2} bg={C.c2} bgH={C.c2h} familySide={2} />
       </div>
 
-      {/* Add Stamouder Modal */}
       <Modal open={!!addModal} onClose={closeAddModal} title="Stamouder toevoegen">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.txM, textTransform: "uppercase", letterSpacing: 1 }}>Stamouder</div>
@@ -399,49 +453,68 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
           </div>
         </div>
       </Modal>
-
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap');`}</style>
     </div>
   );
 }
 
 // ============================================================
-// BRANCH VIEW
+// BRANCH VIEW — with birthYear + photo
 // ============================================================
 function BranchView({ treeData, branchId, onBack, onUpdateTree, treeId }) {
   const [modal, setModal] = useState(null);
   const [firstName, setFN] = useState("");
   const [lastName, setLN] = useState("");
+  const [birthYear, setBY] = useState("");
   const [deleting, setDel] = useState(null);
   const [collapsed, setCollapsed] = useState({});
+  const [uploading, setUploading] = useState(null); // personId being uploaded
+  const fileInputRef = useRef(null);
+  const [photoTarget, setPhotoTarget] = useState(null);
 
   if (!treeData?.branches?.[branchId]) return null;
   const branch = treeData.branches[branchId];
   const people = treeData.people || {};
   const familyName = branch.familySide === 1 ? treeData.familyName1 : treeData.familyName2;
 
-  const openModal = (type, targetId, person) => { setModal({ type, targetId, person }); setFN(person?.firstName || ""); setLN(person?.lastName || ""); };
-  const closeModal = () => { setModal(null); setFN(""); setLN(""); };
+  const openModal = (type, targetId, person) => {
+    setModal({ type, targetId, person });
+    setFN(person?.firstName || "");
+    setLN(person?.lastName || "");
+    setBY(person?.birthYear || "");
+  };
+  const closeModal = () => { setModal(null); setFN(""); setLN(""); setBY(""); };
   const getChildren = (pid) => Object.values(people).filter((p) => p.branchId === branchId && p.parentId === pid && !p.isPartnerOf);
   const getPartner = (pid) => { const p = people[pid]; return p?.partnerId ? people[p.partnerId] || null : null; };
 
-  const setPerson = (id, data) => { onUpdateTree({ ...treeData, people: { ...treeData.people, [id]: data } }); if (useFirebase) firebaseDb.ref(`trees/${treeId}/people/${id}`).set(data); };
-  const updatePerson = (id, fields) => { const ex = treeData.people[id]; if (!ex) return; onUpdateTree({ ...treeData, people: { ...treeData.people, [id]: { ...ex, ...fields } } }); if (useFirebase) firebaseDb.ref(`trees/${treeId}/people/${id}`).update(fields); };
-  const removePerson = (id) => { const np = { ...treeData.people }; delete np[id]; onUpdateTree({ ...treeData, people: np }); if (useFirebase) firebaseDb.ref(`trees/${treeId}/people/${id}`).remove(); };
+  const updatePerson = (id, fields) => {
+    const ex = treeData.people[id]; if (!ex) return;
+    onUpdateTree({ ...treeData, people: { ...treeData.people, [id]: { ...ex, ...fields } } });
+    if (useFirebase) firebaseDb.ref(`trees/${treeId}/people/${id}`).update(fields);
+  };
+  const setPerson = (id, data) => {
+    onUpdateTree({ ...treeData, people: { ...treeData.people, [id]: data } });
+    if (useFirebase) firebaseDb.ref(`trees/${treeId}/people/${id}`).set(data);
+  };
+  const removePerson = (id) => {
+    const np = { ...treeData.people }; delete np[id];
+    onUpdateTree({ ...treeData, people: np });
+    if (useFirebase) firebaseDb.ref(`trees/${treeId}/people/${id}`).remove();
+  };
 
   const handleSave = () => {
     if (!firstName.trim() || !modal) return;
     if (modal.type === "edit") {
-      updatePerson(modal.person.id, { firstName: firstName.trim(), lastName: lastName.trim() });
+      updatePerson(modal.person.id, { firstName: firstName.trim(), lastName: lastName.trim(), birthYear: birthYear.trim() });
     } else if (modal.type === "partner") {
       const nId = uid(), t = people[modal.targetId], d = t?.depth ?? 0;
-      const newPartner = { id: nId, firstName: firstName.trim(), lastName: lastName.trim(), branchId, familySide: branch.familySide, partnerId: modal.targetId, isPartnerOf: modal.targetId, parentId: t?.parentId || null, depth: d };
+      const newPartner = { id: nId, firstName: firstName.trim(), lastName: lastName.trim(), branchId, familySide: branch.familySide, partnerId: modal.targetId, isPartnerOf: modal.targetId, parentId: t?.parentId || null, depth: d, birthYear: birthYear.trim(), photoURL: "" };
       const updatedPeople = { ...treeData.people, [nId]: newPartner, [modal.targetId]: { ...treeData.people[modal.targetId], partnerId: nId } };
       onUpdateTree({ ...treeData, people: updatedPeople });
       if (useFirebase) { firebaseDb.ref(`trees/${treeId}/people/${nId}`).set(newPartner); firebaseDb.ref(`trees/${treeId}/people/${modal.targetId}/partnerId`).set(nId); }
     } else if (modal.type === "child") {
       const nId = uid(), par = people[modal.targetId], d = (par?.depth ?? 0) + 1;
-      setPerson(nId, { id: nId, firstName: firstName.trim(), lastName: lastName.trim(), branchId, familySide: branch.familySide, partnerId: null, isPartnerOf: null, parentId: modal.targetId, depth: d });
+      setPerson(nId, { id: nId, firstName: firstName.trim(), lastName: lastName.trim(), branchId, familySide: branch.familySide, partnerId: null, isPartnerOf: null, parentId: modal.targetId, depth: d, birthYear: birthYear.trim(), photoURL: "" });
     }
     closeModal();
   };
@@ -453,42 +526,106 @@ function BranchView({ treeData, branchId, onBack, onUpdateTree, treeId }) {
     removePerson(pid); setDel(null);
   };
 
+  // Photo upload
+  const triggerPhotoUpload = (personId) => {
+    setPhotoTarget(personId);
+    setTimeout(() => fileInputRef.current?.click(), 50);
+  };
+
+  const handlePhotoSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !photoTarget) return;
+    setUploading(photoTarget);
+    try {
+      const url = await uploadPhoto(photoTarget, file);
+      if (url) updatePerson(photoTarget, { photoURL: url });
+    } catch (err) {
+      console.error("Photo upload error:", err);
+    }
+    setUploading(null);
+    setPhotoTarget(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const toggleCollapse = (id) => setCollapsed((c) => ({ ...c, [id]: !c[id] }));
   const collapseAll = () => { const a = {}; Object.values(people).forEach((p) => { if (p.branchId === branchId && !p.isPartnerOf && getChildren(p.id).length > 0) a[p.id] = true; }); setCollapsed(a); };
   const expandAll = () => setCollapsed({});
   const countDesc = (pid) => { let c = 0; for (const k of getChildren(pid)) { c += 1 + countDesc(k.id); } return c; };
 
+  // Render a single person card
+  const PersonCard = ({ person, depth, isPartner }) => {
+    const gc = genColor(depth);
+    const label = isPartner ? "partner" : genLabel(depth);
+    const isUploadingThis = uploading === person.id;
+
+    return (
+      <div style={{ background: gc.bg, border: `2px solid ${gc.bd}`, borderRadius: 14, padding: 16, minWidth: 140, boxShadow: `0 2px 10px ${C.sh}`, maxWidth: 260 }}>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div onClick={() => openModal("edit", null, person)}
+              style={{ fontWeight: 600, fontSize: 17, color: C.tx, cursor: "pointer", marginBottom: 2, lineHeight: 1.3 }}>
+              {person.firstName} {person.lastName}
+            </div>
+            <div style={{ fontSize: 11, color: C.txM, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              {label}{person.birthYear ? ` · ${person.birthYear}` : ""}
+            </div>
+          </div>
+          {person.photoURL ? (
+            <div onClick={(e) => { e.stopPropagation(); triggerPhotoUpload(person.id); }} style={{ cursor: "pointer" }}>
+              <PhotoThumb src={person.photoURL} size={56} />
+            </div>
+          ) : (
+            <div onClick={(e) => { e.stopPropagation(); triggerPhotoUpload(person.id); }}
+              style={{ width: 56, height: 56, borderRadius: 8, background: C.bgW, border: `1px dashed ${C.bd}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 20, color: C.txM }}>
+              {isUploadingThis ? "⏳" : "📷"}
+            </div>
+          )}
+        </div>
+        {!isPartner && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+            {!getPartner(person.id) && <button onClick={(e) => { e.stopPropagation(); openModal("partner", person.id); }} style={{ background: C.bgW, border: `1px solid ${C.bd}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 500, color: C.txL, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>+ Partner</button>}
+            <button onClick={(e) => { e.stopPropagation(); openModal("child", person.id); }} style={{ background: C.bgC, border: `1px solid ${C.bd}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 500, color: C.a2, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>+ Kind</button>
+            {getChildren(person.id).length > 0 && <button onClick={(e) => { e.stopPropagation(); toggleCollapse(person.id); }} style={{ background: collapsed[person.id] ? "#E8E0D4" : C.bgW, border: `1px solid ${C.bd}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 500, color: C.tx, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>{collapsed[person.id] ? `▶ ${countDesc(person.id)}` : "▼"}</button>}
+            {depth > 0 && <button onClick={(e) => { e.stopPropagation(); setDel(person.id); }} style={{ background: C.dngL, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: C.dng, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>✕</button>}
+          </div>
+        )}
+        {isPartner && (
+          <div style={{ marginTop: 10 }}>
+            <button onClick={(e) => { e.stopPropagation(); setDel(person.id); }} style={{ background: C.dngL, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: C.dng, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>✕</button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderPerson = (person, depth = 0) => {
     if (!person) return null;
-    const partner = getPartner(person.id), children = getChildren(person.id), gc = genColor(depth), label = genLabel(depth);
-    const isC = collapsed[person.id] && children.length > 0, descN = children.length > 0 ? countDesc(person.id) : 0;
+    const partner = getPartner(person.id);
+    const children = getChildren(person.id);
+    const isC = collapsed[person.id] && children.length > 0;
+    const descN = children.length > 0 ? countDesc(person.id) : 0;
 
     return (
       <div key={person.id} style={{ marginTop: depth > 0 ? 16 : 0 }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ background: gc.bg, border: `2px solid ${gc.bd}`, borderRadius: 14, padding: 16, minWidth: 140, boxShadow: `0 2px 10px ${C.sh}`, maxWidth: 240 }}>
-            <div onClick={() => openModal("edit", null, person)} style={{ fontWeight: 600, fontSize: 17, color: C.tx, cursor: "pointer", marginBottom: 2, lineHeight: 1.3 }}>{person.firstName} {person.lastName}</div>
-            <div style={{ fontSize: 11, color: C.txM, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>{label}</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {!partner && <button onClick={(e) => { e.stopPropagation(); openModal("partner", person.id); }} style={{ background: C.bgW, border: `1px solid ${C.bd}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 500, color: C.txL, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>+ Partner</button>}
-              <button onClick={(e) => { e.stopPropagation(); openModal("child", person.id); }} style={{ background: C.bgC, border: `1px solid ${C.bd}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 500, color: C.a2, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>+ Kind</button>
-              {children.length > 0 && <button onClick={(e) => { e.stopPropagation(); toggleCollapse(person.id); }} style={{ background: isC ? "#E8E0D4" : C.bgW, border: `1px solid ${C.bd}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 500, color: C.tx, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>{isC ? `▶ ${descN}` : "▼"}</button>}
-              {depth > 0 && <button onClick={(e) => { e.stopPropagation(); setDel(person.id); }} style={{ background: C.dngL, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: C.dng, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>✕</button>}
-            </div>
-          </div>
+          <PersonCard person={person} depth={depth} isPartner={false} />
           {partner && (
             <>
               <div style={{ display: "flex", alignItems: "center", alignSelf: "center" }}><div style={{ width: 24, height: 2, background: C.ln }} /></div>
-              <div style={{ background: gc.bg, border: `2px solid ${gc.bd}`, borderRadius: 14, padding: 16, minWidth: 140, boxShadow: `0 2px 10px ${C.sh}`, maxWidth: 220 }}>
-                <div onClick={() => openModal("edit", null, partner)} style={{ fontWeight: 600, fontSize: 17, color: C.tx, cursor: "pointer", marginBottom: 2, lineHeight: 1.3 }}>{partner.firstName} {partner.lastName}</div>
-                <div style={{ fontSize: 11, color: C.txM, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>partner</div>
-                <button onClick={(e) => { e.stopPropagation(); setDel(partner.id); }} style={{ background: C.dngL, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: C.dng, cursor: "pointer", fontFamily: ff, minHeight: 36 }}>✕</button>
-              </div>
+              <PersonCard person={partner} depth={depth} isPartner={true} />
             </>
           )}
         </div>
-        {children.length > 0 && !isC && <div style={{ marginLeft: 22, paddingLeft: 22, borderLeft: `2px solid ${C.ln}`, marginTop: 8 }}>{children.map((ch) => renderPerson(ch, depth + 1))}</div>}
-        {isC && <div onClick={() => toggleCollapse(person.id)} style={{ marginLeft: 22, paddingLeft: 22, borderLeft: `2px dashed ${C.bd}`, marginTop: 8, padding: "8px 16px", color: C.txM, fontSize: 13, cursor: "pointer", fontStyle: "italic" }}>{descN} {descN === 1 ? "nakomeling" : "nakomelingen"} verborgen — tik om te tonen</div>}
+        {children.length > 0 && !isC && (
+          <div style={{ marginLeft: 22, paddingLeft: 22, borderLeft: `2px solid ${C.ln}`, marginTop: 8 }}>
+            {children.map((ch) => renderPerson(ch, depth + 1))}
+          </div>
+        )}
+        {isC && (
+          <div onClick={() => toggleCollapse(person.id)} style={{ marginLeft: 22, paddingLeft: 22, borderLeft: `2px dashed ${C.bd}`, marginTop: 8, padding: "8px 16px", color: C.txM, fontSize: 13, cursor: "pointer", fontStyle: "italic" }}>
+            {descN} {descN === 1 ? "nakomeling" : "nakomelingen"} verborgen — tik om te tonen
+          </div>
+        )}
       </div>
     );
   };
@@ -497,6 +634,9 @@ function BranchView({ treeData, branchId, onBack, onUpdateTree, treeId }) {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: ff, color: C.tx }}>
+      {/* Hidden file input for photo uploads */}
+      <input type="file" accept="image/*" ref={fileInputRef} onChange={handlePhotoSelected} style={{ display: "none" }} />
+
       <div style={{ background: C.wh, borderBottom: `1px solid ${C.bd}`, padding: "16px 20px", position: "sticky", top: 0, zIndex: 100, boxShadow: `0 2px 12px ${C.sh}` }}>
         <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", alignItems: "center", gap: 12 }}>
           <Btn variant="ghost" small onClick={onBack}>← Terug</Btn>
@@ -513,16 +653,20 @@ function BranchView({ treeData, branchId, onBack, onUpdateTree, treeId }) {
         </div>
         {stamouder ? renderPerson(stamouder, 0) : <div style={{ textAlign: "center", padding: 40, color: C.txM }}>Geen stamouder gevonden.</div>}
       </div>
-      <Modal open={!!modal} onClose={closeModal} title={modal?.type === "edit" ? "Naam bewerken" : modal?.type === "partner" ? "Partner toevoegen" : "Kind toevoegen"}>
+
+      {/* Add/Edit Modal — now with birthYear */}
+      <Modal open={!!modal} onClose={closeModal} title={modal?.type === "edit" ? "Bewerken" : modal?.type === "partner" ? "Partner toevoegen" : "Kind toevoegen"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Input value={firstName} onChange={setFN} placeholder="Voornaam" autoFocus />
           <Input value={lastName} onChange={setLN} placeholder="Achternaam" />
+          <Input value={birthYear} onChange={setBY} placeholder="Geboortejaar (bijv. 1974)" type="number" style={{ maxWidth: 200 }} />
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <Btn onClick={handleSave} disabled={!firstName.trim()} style={{ flex: 1 }}>{modal?.type === "edit" ? "Opslaan" : "Toevoegen"}</Btn>
             <Btn variant="secondary" onClick={closeModal}>Annuleren</Btn>
           </div>
         </div>
       </Modal>
+
       <Modal open={!!deleting} onClose={() => setDel(null)} title="Verwijderen">
         <p style={{ color: C.txL, lineHeight: 1.5, marginBottom: 20 }}>Weet je het zeker? Dit verwijdert ook alle kinderen en partners eronder.</p>
         <div style={{ display: "flex", gap: 8 }}>
