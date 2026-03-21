@@ -48,7 +48,7 @@ const initFirebase = () => new Promise((resolve) => {
 // ============================================================
 // Image compression helper
 // ============================================================
-const compressImage = (file, maxWidth = 200) => new Promise((resolve) => {
+const compressImage = (file, maxWidth = 400) => new Promise((resolve) => {
   const reader = new FileReader();
   reader.onload = (e) => {
     const img = new Image();
@@ -59,7 +59,7 @@ const compressImage = (file, maxWidth = 200) => new Promise((resolve) => {
       canvas.height = img.height * ratio;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL("image/jpeg", 0.7));
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
     };
     img.src = e.target.result;
   };
@@ -135,11 +135,30 @@ function Input({ value, onChange, placeholder, autoFocus, type = "text", style =
   );
 }
 
-// Small photo thumbnail component
-function PhotoThumb({ src, size = 60 }) {
+// Small photo thumbnail component — tap to enlarge
+function PhotoThumb({ src, size = 60, onChangePhoto }) {
+  const [enlarged, setEnlarged] = useState(false);
   if (!src) return null;
   return (
-    <img src={src} alt="" style={{ width: size, height: size, borderRadius: 8, objectFit: "cover", border: `1px solid ${C.bd}` }} />
+    <>
+      <img src={src} alt="" onClick={(e) => { e.stopPropagation(); setEnlarged(true); }}
+        style={{ width: size, height: size, borderRadius: 8, objectFit: "cover", border: `1px solid ${C.bd}`, cursor: "pointer" }} />
+      {enlarged && (
+        <div onClick={(e) => { e.stopPropagation(); setEnlarged(false); }} style={{
+          position: "fixed", inset: 0, zIndex: 2000, background: "rgba(58,46,34,0.7)",
+          backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, flexDirection: "column", gap: 16
+        }}>
+          <img src={src} alt="" style={{ maxWidth: "90vw", maxHeight: "70vh", borderRadius: 12, boxShadow: "0 20px 60px rgba(0,0,0,0.4)" }} />
+          {onChangePhoto && (
+            <button onClick={(e) => { e.stopPropagation(); setEnlarged(false); onChangePhoto(); }} style={{
+              background: C.wh, border: "none", borderRadius: 10, padding: "12px 24px",
+              fontSize: 15, fontWeight: 500, color: C.tx, cursor: "pointer", fontFamily: ff,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)"
+            }}>📷 Andere foto kiezen</button>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -381,7 +400,7 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
             <div style={{ fontFamily: fh, fontSize: 18, fontWeight: 600, color: C.tx, marginBottom: 2 }}>{st ? `${st.firstName} ${st.lastName}`.trim() : "?"}</div>
             <div style={{ fontSize: 15, color: C.txL, marginBottom: 6 }}>& {pt ? `${pt.firstName} ${pt.lastName}`.trim() : "partner onbekend"}</div>
           </div>
-          {st?.photoURL && <PhotoThumb src={st.photoURL} size={50} />}
+          {st?.photoURL && <PhotoThumb src={st.photoURL} size={56} />}
         </div>
         {kids.length > 0 && (
           <div style={{ marginTop: 8, marginBottom: 8 }}>
@@ -577,12 +596,12 @@ function BranchView({ treeData, branchId, onBack, onUpdateTree, treeId }) {
             </div>
           </div>
           {person.photoURL ? (
-            <div onClick={(e) => { e.stopPropagation(); triggerPhotoUpload(person.id); }} style={{ cursor: "pointer" }}>
-              <PhotoThumb src={person.photoURL} size={56} />
+            <div onClick={(e) => { e.stopPropagation(); }} style={{ cursor: "pointer" }}>
+              <PhotoThumb src={person.photoURL} size={64} onChangePhoto={() => triggerPhotoUpload(person.id)} />
             </div>
           ) : (
             <div onClick={(e) => { e.stopPropagation(); triggerPhotoUpload(person.id); }}
-              style={{ width: 56, height: 56, borderRadius: 8, background: C.bgW, border: `1px dashed ${C.bd}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 20, color: C.txM }}>
+              style={{ width: 64, height: 64, borderRadius: 8, background: C.bgW, border: `1px dashed ${C.bd}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 22, color: C.txM }}>
               {isUploadingThis ? "⏳" : "📷"}
             </div>
           )}
