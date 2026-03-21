@@ -292,7 +292,10 @@ function OverviewScreen({ treeData, onOpenBranch, onUpdateTree, treeId }) {
     closeAddModal();
   };
 
-  const dirKids = (bId, sId) => Object.values(people).filter((p) => p.branchId === bId && p.parentId === sId && !p.isPartnerOf);
+  const dirKids = (bId, sId) => Object.values(people).filter((p) => p.branchId === bId && p.parentId === sId && !p.isPartnerOf).sort((a, b) => {
+    const ya = parseInt(a.birthYear) || 9999, yb = parseInt(b.birthYear) || 9999;
+    return ya - yb;
+  });
   const descCount = (bId) => Object.values(people).filter((p) => p.branchId === bId && p.depth > 0 && !p.isPartnerOf).length;
   const partnerOf = (pid) => { const p = people[pid]; return p?.partnerId ? people[p.partnerId] || null : null; };
   const kidsOf = (pid, bId) => Object.values(people).filter((p) => p.branchId === bId && p.parentId === pid && !p.isPartnerOf);
@@ -484,7 +487,10 @@ function BranchView({ treeData, branchId, onBack, onUpdateTree, treeId }) {
     setBY(person?.birthYear || "");
   };
   const closeModal = () => { setModal(null); setFN(""); setLN(""); setBY(""); };
-  const getChildren = (pid) => Object.values(people).filter((p) => p.branchId === branchId && p.parentId === pid && !p.isPartnerOf);
+  const getChildren = (pid) => Object.values(people).filter((p) => p.branchId === branchId && p.parentId === pid && !p.isPartnerOf).sort((a, b) => {
+    const ya = parseInt(a.birthYear) || 9999, yb = parseInt(b.birthYear) || 9999;
+    return ya - yb;
+  });
   const getPartner = (pid) => { const p = people[pid]; return p?.partnerId ? people[p.partnerId] || null : null; };
 
   const updatePerson = (id, fields) => {
